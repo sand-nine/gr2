@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 
+import numpy as np
 
 def _flatten_helper(T, N, _tensor):
     return _tensor.view(T * N, *_tensor.size()[2:])
@@ -9,7 +10,7 @@ def _flatten_helper(T, N, _tensor):
 class RolloutStorage(object):
     def __init__(self, num_steps, num_processes, obs_shape, action_space,
                  recurrent_hidden_state_size):
-        self.obs = torch.zeros(num_steps + 1, num_processes, *obs_shape)
+        self.obs = torch.zeros(num_steps + 1, num_processes, *obs_shape)#Why num_steps + 1?
         self.recurrent_hidden_states = torch.zeros(
             num_steps + 1, num_processes, recurrent_hidden_state_size)
         self.rewards = torch.zeros(num_steps, num_processes, 1)
@@ -19,7 +20,8 @@ class RolloutStorage(object):
         if action_space.__class__.__name__ == 'Discrete':
             action_shape = 1
         else:
-            action_shape = action_space.shape[0]
+            #action_shape = np.array(action_space).shape[0]
+            action_shape = 1
         self.actions = torch.zeros(num_steps, num_processes, action_shape)
         if action_space.__class__.__name__ == 'Discrete':
             self.actions = self.actions.long()
@@ -88,6 +90,7 @@ class RolloutStorage(object):
                         gamma * self.masks[step + 1] + self.rewards[step]) * self.bad_masks[step + 1] \
                         + (1 - self.bad_masks[step + 1]) * self.value_preds[step]
         else:
+            #print("tell me the truth")
             if use_gae:
                 self.value_preds[-1] = next_value
                 gae = 0
@@ -99,6 +102,7 @@ class RolloutStorage(object):
                                                                   1] * gae
                     self.returns[step] = gae + self.value_preds[step]
             else:
+                #print("asd")
                 self.returns[-1] = next_value
                 for step in reversed(range(self.rewards.size(0))):
                     self.returns[step] = self.returns[step + 1] * \

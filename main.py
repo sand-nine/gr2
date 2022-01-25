@@ -11,13 +11,53 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+#torch.autograd.set_detect_anomaly(True)
+
 from a2c_ppo_acktr import algo, utils
 from a2c_ppo_acktr.algo import gail
 from a2c_ppo_acktr.arguments import get_args
 from a2c_ppo_acktr.envs import make_vec_envs
-from a2c_ppo_acktr.model import Policy
+#from a2c_ppo_acktr.model import Policy
 from a2c_ppo_acktr.storage import RolloutStorage
 from evaluation import evaluate
+
+from env_pbeauty import PBeautyGame
+
+from Simple_ReplayBuffer import SimpleReplayBuffer
+from models import StochasiticNNConditionalPolicy,DeterminisiticNNPolicy,NNJointQFunction,NNQFunction
+from mavb_ac import MAVBAC
+
+from sampler import MASampler
+
+from copy import deepcopy
+
+def get_agent(i,env):
+    pool = SimpleReplayBuffer(env.env_specs, max_replay_buffer_size=1e4, agent_id=i)
+    opponent_conditional_policy = StochasiticNNConditionalPolicy(env_spec=env.env_specs, agent_id=i, linearsth=[1,1,9])
+    policy = DeterminisiticNNPolicy(env_spec=env.env_specs, agent_id=i)
+    target_policy = DeterminisiticNNPolicy(env_spec=env.env_specs, agent_id=i)
+    joint_qf = NNJointQFunction(env_spec=env.env_specs,agent_id=i,linearsth=[1,1,9])
+    target_joint_qf = NNJointQFunction(env_spec=env.env_specs,agent_id=i,linearsth=[1,1,9])
+    qf = NNQFunction(env_spec=env.env_specs,agent_id=i)
+    agent = MAVBAC(
+        agent_id=i,
+        env=env,
+        pool=pool,
+        joint_qf=joint_qf,
+        target_joint_qf=target_joint_qf,
+        qf=qf,
+        policy=policy,
+        target_policy=target_policy,
+        conditional_policy=opponent_conditional_policy,
+        policy_lr=3e-4,
+        qf_lr=3e-4,
+        tau=0.01,
+        value_n_particles=16,
+        td_target_update_interval=5,
+        discount=0.99,
+        reward_scale=1
+        )
+    return agent
 
 
 def main():
@@ -38,70 +78,109 @@ def main():
     torch.set_num_threads(1)
     device = torch.device("cuda:0" if args.cuda else "cpu")
 
-    envs = make_vec_envs(args.env_name, args.seed, args.num_processes,
-                         args.gamma, args.log_dir, device, False)
+    #envs_backup = make_vec_envs(args.env_name, args.seed, args.num_processes,args.gamma, args.log_dir, device, False)
 
-    actor_critic = Policy(
-        envs.observation_space.shape,
-        envs.action_space,
-        base_kwargs={'recurrent': args.recurrent_policy})
-    actor_critic.to(device)
+    agent_num = 10
 
-    if args.algo == 'a2c':
-        agent = algo.A2C_ACKTR(
-            actor_critic,
-            args.value_loss_coef,
-            args.entropy_coef,
-            lr=args.lr,
-            eps=args.eps,
-            alpha=args.alpha,
-            max_grad_norm=args.max_grad_norm)
-    elif args.algo == 'ppo':
-        agent = algo.PPO(
-            actor_critic,
-            args.clip_param,
-            args.ppo_epoch,
-            args.num_mini_batch,
-            args.value_loss_coef,
-            args.entropy_coef,
-            lr=args.lr,
-            eps=args.eps,
-            max_grad_norm=args.max_grad_norm)
-    elif args.algo == 'acktr':
-        agent = algo.A2C_ACKTR(
-            actor_critic, args.value_loss_coef, args.entropy_coef, acktr=True)
+    envs = PBeautyGame(agent_num)
 
-    if args.gail:
-        assert len(envs.observation_space.shape) == 1
-        discr = gail.Discriminator(
-            envs.observation_space.shape[0] + envs.action_space.shape[0], 100,
-            device)
-        file_name = os.path.join(
-            args.gail_experts_dir, "trajs_{}.pt".format(
-                args.env_name.split('-')[0].lower()))
+    #actor_1 = get_agent(env=envs,i=0)
+    #actor_1._p_update()
+    #actor_2 = get_agent(env=envs,i=1)
+    actors = []
+
+    for sth in range(agent_num):
+        actors.append( get_agent(env=envs,i=sth) )
+    
+    batch_size = 64
+
+    sampler = MASampler(agent_num=agent_num, joint=True, max_path_length=30, min_pool_size=100, batch_size=batch_size)
+    sampler.initialize(envs,actors)
+
+    for actor in actors:
+        actor._target_update()
+    
+    initial_exploration_done = False
+
+    for epoch in range(20000):
         
-        expert_dataset = gail.ExpertDataset(
-            file_name, num_trajectories=4, subsample_frequency=20)
-        drop_last = len(expert_dataset) > args.gail_batch_size
-        gail_train_loader = torch.utils.data.DataLoader(
-            dataset=expert_dataset,
-            batch_size=args.gail_batch_size,
-            shuffle=True,
-            drop_last=drop_last)
+        #print(epoch)
+
+        for t in range(1):
+            #print("t",t)
+            if not initial_exploration_done:
+                if epoch >= 1000:
+                    initial_exploration_done = True
+            sampler.sample()
+            if not initial_exploration_done:
+                continue
+
+            for j in range(1):
+                batch_n = []
+                recent_batch_n = []
+                indices = None
+                receent_indices = None
+                for i, agent in enumerate(actors):
+                    if i == 0:
+                        batch = agent._pool.random_batch(batch_size)
+                        indices = agent._pool.indices
+                        receent_indices = list(range(agent._pool._top-batch_size, agent._pool._top))
+
+                    batch_n.append(agent._pool.random_batch_by_indices(indices))
+                    recent_batch_n.append(agent._pool.random_batch_by_indices(receent_indices))
+
+                target_next_actions_n = []
+                try:
+                    for agent, batch in zip(actors, batch_n):
+                        target_next_actions_n.append(agent._target_policy(torch.Tensor(batch['next_observations']).detach()))
+                    #print(target_next_actions_n)
+                    #print("...")
+                except:
+                    #print("???")
+                    pass
+                
+                opponent_actions_n = np.array([batch['actions'] for batch in batch_n])
+                recent_opponent_actions_n = np.array([batch['actions'] for batch in recent_batch_n])
+
+                recent_opponent_observations_n = []
+                for batch in recent_batch_n:
+                    recent_opponent_observations_n.append(batch['observations'])
+
+                current_actions = [actors[i]._policy(torch.Tensor(batch_n[i]['next_observations']).detach())[0][0] for i in range(agent_num)]
+                all_actions_k = []
+
+                for i, agent in enumerate(actors):
+                    #try:
+                    #print(target_next_actions_n[i])
+                    batch_n[i]['next_actions'] = deepcopy(target_next_actions_n[i].detach())
+                    
+                    #except:
+                        #pass
+                    batch_n[i]['opponent_actions'] = np.reshape(np.delete(deepcopy(opponent_actions_n), i, 0), (-1, agent._opponent_action_dim))
+                    
+                    agent._do_training(iteration=t + epoch * 1000, batch=batch_n[i], annealing=1.)
+
+    
+    """
 
     rollouts = RolloutStorage(args.num_steps, args.num_processes,
-                              envs.observation_space.shape, envs.action_space,
+                              envs.reset().shape, envs.action_spaces,
                               actor_critic.recurrent_hidden_state_size)
 
-    obs = envs.reset()
+    #rollouts_backup = RolloutStorage(args.num_steps, args.num_processes,
+    #                                envs_backup.observations.shape,envs_backup.action_space,
+    #                                actor_critic.recurrent_hidden_state_size)
+
+    obs = torch.from_numpy(envs.reset())
     rollouts.obs[0].copy_(obs)
     rollouts.to(device)
 
-    episode_rewards = deque(maxlen=10)
+    episode_rewards = deque(maxlen=10)#10个元素的固定大小队列
 
     start = time.time()
     num_updates = int(
         args.num_env_steps) // args.num_steps // args.num_processes
+
     for j in range(num_updates):
 
         if args.use_linear_lr_decay:
@@ -113,6 +192,7 @@ def main():
         for step in range(args.num_steps):
             # Sample actions
             with torch.no_grad():
+
                 value, action, action_log_prob, recurrent_hidden_states = actor_critic.act(
                     rollouts.obs[step], rollouts.recurrent_hidden_states[step],
                     rollouts.masks[step])
@@ -122,14 +202,12 @@ def main():
 
             for info in infos:
                 if 'episode' in info.keys():
+                    #print(info['episode']['r'])
                     episode_rewards.append(info['episode']['r'])
 
             # If done then clean the history of observations.
-            masks = torch.FloatTensor(
-                [[0.0] if done_ else [1.0] for done_ in done])
-            bad_masks = torch.FloatTensor(
-                [[0.0] if 'bad_transition' in info.keys() else [1.0]
-                 for info in infos])
+            # masks = torch.FloatTensor([[0.0] if done_ else [1.0] for done_ in done])
+            # bad_masks = torch.FloatTensor([[0.0] if 'bad_transition' in info.keys() else [1.0] for info in infos])
             rollouts.insert(obs, recurrent_hidden_states, action,
                             action_log_prob, value, reward, masks, bad_masks)
 
@@ -137,7 +215,6 @@ def main():
             next_value = actor_critic.get_value(
                 rollouts.obs[-1], rollouts.recurrent_hidden_states[-1],
                 rollouts.masks[-1]).detach()
-
         if args.gail:
             if j >= 10:
                 envs.venv.eval()
@@ -191,7 +268,8 @@ def main():
                 and j % args.eval_interval == 0):
             obs_rms = utils.get_vec_normalize(envs).obs_rms
             evaluate(actor_critic, obs_rms, args.env_name, args.seed,
-                     args.num_processes, eval_log_dir, device)
+                     args.num_processes, eval_log_dir, device)]
+    """
 
 
 if __name__ == "__main__":

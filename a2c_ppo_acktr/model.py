@@ -12,7 +12,7 @@ class Flatten(nn.Module):
         return x.view(x.size(0), -1)
 
 
-class Policy(nn.Module):
+class Policy():
     def __init__(self, obs_shape, action_space, base=None, base_kwargs=None):
         super(Policy, self).__init__()
         if base_kwargs is None:
@@ -23,7 +23,8 @@ class Policy(nn.Module):
             elif len(obs_shape) == 1:
                 base = MLPBase
             else:
-                raise NotImplementedError
+                base = MLPBase
+                #raise NotImplementedError
 
         self.base = base(obs_shape[0], **base_kwargs)
 
@@ -37,7 +38,10 @@ class Policy(nn.Module):
             num_outputs = action_space.shape[0]
             self.dist = Bernoulli(self.base.output_size, num_outputs)
         else:
-            raise NotImplementedError
+            #print(action_space)
+            num_outputs = 1#action_space.n
+            self.dist = Categorical(self.base.output_size, num_outputs)
+            #raise NotImplementedError
 
     @property
     def is_recurrent(self):
@@ -45,14 +49,15 @@ class Policy(nn.Module):
 
     @property
     def recurrent_hidden_state_size(self):
-        """Size of rnn_hx."""
         return self.base.recurrent_hidden_state_size
 
     def forward(self, inputs, rnn_hxs, masks):
         raise NotImplementedError
 
     def act(self, inputs, rnn_hxs, masks, deterministic=False):
+        
         value, actor_features, rnn_hxs = self.base(inputs, rnn_hxs, masks)
+
         dist = self.dist(actor_features)
 
         if deterministic:
@@ -71,6 +76,7 @@ class Policy(nn.Module):
 
     def evaluate_actions(self, inputs, rnn_hxs, masks, action):
         value, actor_features, rnn_hxs = self.base(inputs, rnn_hxs, masks)
+
         dist = self.dist(actor_features)
 
         action_log_probs = dist.log_probs(action)
@@ -110,10 +116,12 @@ class NNBase(nn.Module):
 
     def _forward_gru(self, x, hxs, masks):
         if x.size(0) == hxs.size(0):
+            #print("tell me")
             x, hxs = self.gru(x.unsqueeze(0), (hxs * masks).unsqueeze(0))
             x = x.squeeze(0)
             hxs = hxs.squeeze(0)
         else:
+            #print("the truth")
             # x is a (T, N, -1) tensor that has been flatten to (T * N, -1)
             N = hxs.size(0)
             T = int(x.size(0) / N)
@@ -173,25 +181,29 @@ class CNNBase(NNBase):
         init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.
                                constant_(x, 0), nn.init.calculate_gain('relu'))
 
+        print(num_inputs)
+
         self.main = nn.Sequential(
             init_(nn.Conv2d(num_inputs, 32, 8, stride=4)), nn.ReLU(),
             init_(nn.Conv2d(32, 64, 4, stride=2)), nn.ReLU(),
             init_(nn.Conv2d(64, 32, 3, stride=1)), nn.ReLU(), Flatten(),
-            init_(nn.Linear(32 * 7 * 7, hidden_size)), nn.ReLU())
+            init_(nn.Linear(32 * 7 * 7, hidden_size)), nn.ReLU()
+        )
 
         init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.
                                constant_(x, 0))
-
+        
         self.critic_linear = init_(nn.Linear(hidden_size, 1))
 
         self.train()
 
     def forward(self, inputs, rnn_hxs, masks):
+
         x = self.main(inputs / 255.0)
 
-        if self.is_recurrent:
+        if self.is_recurrent:#is_recurrent?是連續的？
             x, rnn_hxs = self._forward_gru(x, rnn_hxs, masks)
-
+        
         return self.critic_linear(x), x, rnn_hxs
 
 
