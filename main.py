@@ -31,6 +31,22 @@ from sampler import MASampler
 
 from copy import deepcopy
 
+def INI(modell):
+    try:
+        for m in modell.linear:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.constant_(m.bias,0)
+    except:
+        pass
+    try:
+        for m in modell.tmplinear:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.constant_(m.bias,0)
+    except:
+        pass
+
 def get_agent(i,env):
     pool = SimpleReplayBuffer(env.env_specs, max_replay_buffer_size=1e4, agent_id=i)
     opponent_conditional_policy = StochasiticNNConditionalPolicy(env_spec=env.env_specs, agent_id=i, linearsth=[1,1,9])
@@ -39,6 +55,12 @@ def get_agent(i,env):
     joint_qf = NNJointQFunction(env_spec=env.env_specs,agent_id=i,linearsth=[1,1,9])
     target_joint_qf = NNJointQFunction(env_spec=env.env_specs,agent_id=i,linearsth=[1,1,9])
     qf = NNQFunction(env_spec=env.env_specs,agent_id=i)
+    INI(modell = opponent_conditional_policy)
+    INI(modell = policy)
+    INI(modell = target_policy)
+    INI(modell = joint_qf)
+    INI(modell = target_joint_qf)
+    INI(modell = qf)
     agent = MAVBAC(
         agent_id=i,
         env=env,
@@ -82,7 +104,7 @@ def main():
 
     agent_num = 10
 
-    envs = PBeautyGame(agent_num)
+    envs = PBeautyGame(agent_num,reward_type="abs",p=1.1)
 
     #actor_1 = get_agent(env=envs,i=0)
     #actor_1._p_update()
@@ -132,11 +154,8 @@ def main():
                 target_next_actions_n = []
                 try:
                     for agent, batch in zip(actors, batch_n):
-                        target_next_actions_n.append(agent._target_policy(torch.Tensor(batch['next_observations']).detach()))
-                    #print(target_next_actions_n)
-                    #print("...")
+                        target_next_actions_n.append(agent._target_policy(torch.Tensor(batch['next_observations']).clone()))
                 except:
-                    #print("???")
                     pass
                 
                 opponent_actions_n = np.array([batch['actions'] for batch in batch_n])
@@ -146,7 +165,7 @@ def main():
                 for batch in recent_batch_n:
                     recent_opponent_observations_n.append(batch['observations'])
 
-                current_actions = [actors[i]._policy(torch.Tensor(batch_n[i]['next_observations']).detach())[0][0] for i in range(agent_num)]
+                current_actions = [actors[i]._policy(torch.Tensor(batch_n[i]['next_observations']).clone())[0][0] for i in range(agent_num)]
                 all_actions_k = []
 
                 for i, agent in enumerate(actors):
@@ -158,7 +177,7 @@ def main():
                         #pass
                     batch_n[i]['opponent_actions'] = np.reshape(np.delete(deepcopy(opponent_actions_n), i, 0), (-1, agent._opponent_action_dim))
                     
-                    agent._do_training(iteration=t + epoch * 1000, batch=batch_n[i], annealing=1.)
+                    agent._do_training(iteration=t + epoch * 1000, batch=batch_n[i], annealing=0.5)
 
     
     """

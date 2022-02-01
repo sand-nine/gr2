@@ -11,7 +11,6 @@ class StochasiticNNConditionalPolicy(nn.Module):
         self._opponent_action_dim = env_spec.action_space.opponent_flat_dim(agent_id)
 
         self.linear = nn.Sequential(
-            nn.ReLU(inplace=True),
             nn.Linear(hidden_size,hidden_size),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_size,self._opponent_action_dim),
@@ -21,6 +20,7 @@ class StochasiticNNConditionalPolicy(nn.Module):
         self.action_linear = nn.Linear(linearsth[0],100)
         self.obs_linear = nn.Linear(linearsth[1],100)
         self.latent_linear = nn.Linear(linearsth[2],100)
+        self.relu = nn.ReLU(inplace=True)
 
         self.tmplinear = [
             self.action_linear,
@@ -45,7 +45,7 @@ class StochasiticNNConditionalPolicy(nn.Module):
         else:
             latent_shape = (n_state_samples, self._opponent_action_dim)
 
-        latent = torch.rand(latent_shape)
+        latent = torch.randn(latent_shape)
 
         out = torch.Tensor([0])
         sth = (latent,)
@@ -54,6 +54,7 @@ class StochasiticNNConditionalPolicy(nn.Module):
             tmp = self.tmplinear[j](input_tensor)
             out = out.expand(tmp.size()).clone()
             out += tmp
+        out = self.relu(out)
         out = self.linear(out)
         return out
 
@@ -89,7 +90,6 @@ class NNJointQFunction(nn.Module):
         self._opponent_action_dim = env_spec.action_space.opponent_flat_dim(agent_id)
 
         self.linear = nn.Sequential(
-            nn.ReLU(inplace=True),
             nn.Linear(hidden_size,hidden_size),
             nn.ReLU(inplace=True),
             #nn.Linear(hidden_size,self._opponent_action_dim)
@@ -106,16 +106,18 @@ class NNJointQFunction(nn.Module):
             self.tmp_linear
         ]
 
+        self.relu = nn.ReLU(inplace=True)
+
     def forward(self, inputs):
         out = torch.Tensor([0])
         for j,input_tensor in enumerate(inputs):
             tmp = self.tmplinear[j](input_tensor)#.detach().numpy()
-            
             try:
                 out = out.expand(tmp.size()).clone()
             except:
                 tmp = tmp.expand(out.size()).clone()
             out += tmp
+        out = self.relu(out)
         out = self.linear(out)
         return out[...,0]
 
@@ -138,71 +140,3 @@ class NNQFunction(nn.Module):
     def forward(self, x):
         out = self.linear(x)
         return out[...,0]
-
-"""
-class StochasiticNNConditionalPolicy(nn.Module):
-    def __init__(self,env_spec,hidden_size=100,agent_id=None):
-        super(StochasiticNNConditionalPolicy,self).__init__()
-
-        self._action_dim = env_spec.action_space[agent_id].flat_dim
-        self._observation_dim = env_spec.observation_space[agent_id].flat_dim
-        self._opponent_action_dim = env_spec.action_space.opponent_flat_dim(agent_id)
-
-        self.linear = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(hidden_size,hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size,self._opponent_action_dim),
-            nn.Tanh()
-        )
-    def forward(self, inputs):
-        out = torch.Tensor([0])
-        for j,input_tensor in enumerate(inputs):
-            tmplinear = nn.Sequential(nn.Linear(input_tensor.shape[-1], 100 ))
-            tmp = tmplinear(input_tensor)
-            out = out.expand(tmp.size()).clone()
-            out += tmp
-        out = self.linear(out)
-        return out
-
-class DeterminisiticNNPolicy(nn.Module):
-    def __init__(self, env_spec, agent_id, hidden_size=100):
-        super(DeterminisiticNNPolicy,self).__init__()
-
-        self._observation_dim = env_spec.observation_space[agent_id].flat_dim
-        self._opponent_action_dim = env_spec.action_space.opponent_flat_dim(agent_id)
-
-        self.fc0 = nn.Linear(self._observation_dim, hidden_size)
-        self.fc1 = nn.Linear(hidden_size, hidden_size)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_size, self._opponent_action_dim)
-        self.tanh = nn.Tanh()
-
-    def forward(self,x):
-        out = self.fc0(x)
-        out = self.fc1(out)
-        out = self.relu(out)
-        out = self.fc2(out)
-        out = self.tanh(out)
-        return out
-
-class NNJointQFunction2(nn.Module):
-    def __init__(self,env_spec,hidden_size=100,agent_id=None):
-        super(NNJointQFunction2,self).__init__()
-
-        self._action_dim = env_spec.action_space[agent_id].flat_dim
-        self._observation_dim = env_spec.observation_space[agent_id].flat_dim
-        self._opponent_action_dim = env_spec.action_space.opponent_flat_dim(agent_id)
-
-        self.linear = nn.Sequential(
-            nn.Linear(self._observation_dim + self._action_dim*2 , hidden_size ),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_size,hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_size,self._opponent_action_dim)
-        )
-    
-    def forward(self, x):
-        out = self.linear(x)
-        return out
-"""
