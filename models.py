@@ -72,6 +72,12 @@ class DeterminisiticNNPolicy(nn.Module):
         self.fc2 = nn.Linear(hidden_size, self._action_dim)
         self.tanh = nn.Tanh()
 
+        self.noise_level = 0.0
+        self.mu = 0
+        self.theta = 0.15
+        self.sigma = 0.3
+        self.state = np.ones(self._action_dim) * self.mu
+
     def forward(self,x):
         out = self.fc0(x)
         out = self.relu(out)
@@ -80,6 +86,22 @@ class DeterminisiticNNPolicy(nn.Module):
         out = self.fc2(out)
         out = self.tanh(out)
         return out
+    
+    def evolve_noise_state(self):
+        x = self.state
+        dx = self.theta * (self.mu - x) + self.sigma * np.random.randn(len(x))
+        self.state = x + dx
+        return self.state
+
+    def get_action(self, observation):
+        return self.get_actions(observation[None])[0], None
+    
+    def get_actions(self, observations):
+        actions = self.forward(observations)
+        return np.clip(actions.detach().numpy() + self.noise_level * self.evolve_noise_state(), -1.0, 1.0)
+
+    def set_noise_level(self,noise_level):
+        self.noise_level = noise_level
 
 class NNJointQFunction(nn.Module):
     def __init__(self,env_spec,hidden_size=100,agent_id=None,linearsth=[]):

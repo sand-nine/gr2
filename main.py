@@ -31,22 +31,6 @@ from sampler import MASampler
 
 from copy import deepcopy
 
-def INI(modell):
-    try:
-        for m in modell.linear:
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.constant_(m.bias,0)
-    except:
-        pass
-    try:
-        for m in modell.tmplinear:
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.constant_(m.bias,0)
-    except:
-        pass
-
 def get_agent(i,env):
     pool = SimpleReplayBuffer(env.env_specs, max_replay_buffer_size=1e4, agent_id=i)
     opponent_conditional_policy = StochasiticNNConditionalPolicy(env_spec=env.env_specs, agent_id=i, linearsth=[1,1,9])
@@ -55,12 +39,6 @@ def get_agent(i,env):
     joint_qf = NNJointQFunction(env_spec=env.env_specs,agent_id=i,linearsth=[1,1,9])
     target_joint_qf = NNJointQFunction(env_spec=env.env_specs,agent_id=i,linearsth=[1,1,9])
     qf = NNQFunction(env_spec=env.env_specs,agent_id=i)
-    INI(modell = opponent_conditional_policy)
-    INI(modell = policy)
-    INI(modell = target_policy)
-    INI(modell = joint_qf)
-    INI(modell = target_joint_qf)
-    INI(modell = qf)
     agent = MAVBAC(
         agent_id=i,
         env=env,
@@ -85,30 +63,26 @@ def get_agent(i,env):
 def main():
     args = get_args()
 
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    torch.manual_seed(123)#args.seed)
+    torch.cuda.manual_seed_all(123)#(args.seed)
 
     if args.cuda and torch.cuda.is_available() and args.cuda_deterministic:
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
 
-    log_dir = os.path.expanduser(args.log_dir)
-    eval_log_dir = log_dir + "_eval"
-    utils.cleanup_log_dir(log_dir)
-    utils.cleanup_log_dir(eval_log_dir)
+    #log_dir = os.path.expanduser(args.log_dir)
+    #eval_log_dir = log_dir + "_eval"
+    #utils.cleanup_log_dir(log_dir)
+    #utils.cleanup_log_dir(eval_log_dir)
 
     torch.set_num_threads(1)
     device = torch.device("cuda:0" if args.cuda else "cpu")
-
-    #envs_backup = make_vec_envs(args.env_name, args.seed, args.num_processes,args.gamma, args.log_dir, device, False)
 
     agent_num = 10
 
     envs = PBeautyGame(agent_num,reward_type="abs",p=1.1)
 
-    #actor_1 = get_agent(env=envs,i=0)
-    #actor_1._p_update()
-    #actor_2 = get_agent(env=envs,i=1)
+    
     actors = []
 
     for sth in range(agent_num):
@@ -124,18 +98,46 @@ def main():
     
     initial_exploration_done = False
 
+    noise = 1.
+    alpha = .5
+
+    for agent in actors:
+        try:
+            agent._policy.set_noise_level(noise)
+        except:
+            pass
+    
     for epoch in range(20000):
-        
-        #print(epoch)
 
         for t in range(1):
-            #print("t",t)
             if not initial_exploration_done:
                 if epoch >= 1000:
                     initial_exploration_done = True
             sampler.sample()
             if not initial_exploration_done:
                 continue
+            
+            if epoch > 20000/10:
+                noise = 0.1
+                for agent in actors:
+                    try:
+                        agent._policy.set_noise_level(noise)
+                    except:
+                        pass
+            if epoch > 20000/5:
+                noise = 0.05
+                for agent in actors:
+                    try:
+                        agent._policy.set_noise_level(noise)
+                    except:
+                        pass
+            if epoch > 20000/6:
+                noise = 0.01
+                for agent in actors:
+                    try:
+                        agent._policy.set_noise_level(noise)
+                    except:
+                        pass
 
             for j in range(1):
                 batch_n = []
@@ -154,10 +156,10 @@ def main():
                 target_next_actions_n = []
                 try:
                     for agent, batch in zip(actors, batch_n):
-                        target_next_actions_n.append(agent._target_policy(torch.Tensor(batch['next_observations']).clone()))
+                        target_next_actions_n.append(agent._target_policy.get_actions(torch.Tensor(batch['next_observations'])))
                 except:
                     pass
-                
+
                 opponent_actions_n = np.array([batch['actions'] for batch in batch_n])
                 recent_opponent_actions_n = np.array([batch['actions'] for batch in recent_batch_n])
 
@@ -165,19 +167,16 @@ def main():
                 for batch in recent_batch_n:
                     recent_opponent_observations_n.append(batch['observations'])
 
-                current_actions = [actors[i]._policy(torch.Tensor(batch_n[i]['next_observations']).clone())[0][0] for i in range(agent_num)]
-                all_actions_k = []
+                #current_actions = [actors[i]._policy(torch.Tensor(batch_n[i]['next_observations']).clone())[0][0] for i in range(agent_num)]
+                #all_actions_k = []
 
                 for i, agent in enumerate(actors):
-                    #try:
-                    #print(target_next_actions_n[i])
-                    batch_n[i]['next_actions'] = deepcopy(target_next_actions_n[i].detach())
-                    
-                    #except:
-                        #pass
+                    batch_n[i]['next_actions'] = deepcopy(target_next_actions_n[i])
                     batch_n[i]['opponent_actions'] = np.reshape(np.delete(deepcopy(opponent_actions_n), i, 0), (-1, agent._opponent_action_dim))
-                    
-                    agent._do_training(iteration=t + epoch * 1000, batch=batch_n[i], annealing=0.5)
+                    agent._do_training(iteration=t + epoch, batch=batch_n[i], annealing=alpha)
+
+        sampler.terminate()
+                
 
     
     """

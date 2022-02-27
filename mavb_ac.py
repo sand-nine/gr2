@@ -6,10 +6,11 @@ from kernel import adaptive_isotropic_gaussian_kernel
 
 from einops import repeat
 
-
 from copy import deepcopy
 
 EPS = 1e-6
+
+from torch.utils.tensorboard import SummaryWriter
 
 class MAVBAC():
     def __init__(
@@ -63,24 +64,15 @@ class MAVBAC():
 
         self._annealing = 0.5
 
-        #self._actions = torch.randn(self._action_dim)
-
-        #self._next_observations = torch.randn(self._observation_dim)
-        #self._next_actions = torch.randn(self._action_dim)
-        #self._observations = torch.randn(self._observation_dim)
-        #self._next_actions = torch.randn(self._action_dim)
-
-        #self._opponent_target_actions = torch.randn(self._action_dim)
-        #self._opponent_actions = torch.randn(self._opponent_action_dim)
-
-        #self.rewards = torch.randn(1)
-        #self._terminals = torch.rand(1)
-
         self._kernel_n_particles = 32
         self._kernel_update_ratio = 0.5
 
+        self.writer = SummaryWriter('runs/agent_'+str(agent_id))
+
     def _q_update(self):
-        opponent_target_actions = (2*torch.rand(1,self._value_n_particles,self._opponent_action_dim)-1).expand(64,self._value_n_particles,self._opponent_action_dim)
+        opponent_target_actions = (
+            2*torch.rand(1,self._value_n_particles,self._opponent_action_dim)-1
+        ).expand(64,self._value_n_particles,self._opponent_action_dim)
 
         q_value_targets = self.target_joint_qf(
             (self._next_observations[:,None,:],self._next_actions[:,None,:],opponent_target_actions)
@@ -98,9 +90,11 @@ class MAVBAC():
         next_value += (self._opponent_action_dim) * np.log(2)
 
         ys = self._rewards + (1 - self._terminals) * 0.99 * next_value
-        ys = ys.detach()
+        ys = ys.detach().clone()#.detach()
 
         bellman_residual = 0.5 * torch.mean((ys - self._q_values)**2)
+
+        self.bellman_residual = bellman_residual
 
         optimizer = torch.optim.Adam(self.joint_qf.parameters(),self._qf_lr)
 
@@ -145,11 +139,11 @@ class MAVBAC():
         n_fixed_actions = self._kernel_n_particles - n_updated_actions
 
         fixed_actions,updated_actions = torch.split(actions,[n_fixed_actions, n_updated_actions], dim=1)
-        FIXED = fixed_actions.clone()
-        #fixed_actions = fixed_actions.detach()
+        fixed_actions = fixed_actions.detach().clone()
+        fixed_actions = torch.autograd.Variable(fixed_actions,requires_grad=True)
 
         svgd_target_values = self.joint_qf(
-            (self._observations[:,None,:],self._actions[:,None,:],FIXED)#fixed_actions)
+            (self._observations[:,None,:],self._actions[:,None,:],fixed_actions)#FIXED)#fixed_actions)
         )
 
         baseline_ind_q = self.qf(torch.cat((self._observations, self._actions),dim=1))
@@ -160,27 +154,19 @@ class MAVBAC():
         svgd_target_values = (svgd_target_values - baseline_ind_q) / self._annealing
 
         squash_correction = torch.sum(
-            torch.log(1 - FIXED**2 + EPS),#fixed_actions**2 + EPS),
+            torch.log(1 - fixed_actions**2 + EPS),#fixed_actions**2 + EPS),
             axis = -1
         )
         log_p = svgd_target_values + squash_correction
 
-        #grad_log_p = torch.autograd.grad(log_p.sum(),fixed_actions)[0]#log_p.sum()
         grad_log_p = torch.autograd.grad(
             outputs = log_p,
             inputs = fixed_actions,
             grad_outputs=torch.ones(log_p.shape),
-            allow_unused = True
         )[0]
 
-        #print(grad_log_p)
-        #import time
-        #time.sleep(120)
-
-        fixed_actions = fixed_actions.detach()
-
         grad_log_p = grad_log_p[:,:,None,:]
-        grad_log_p = grad_log_p.detach()
+        grad_log_p = grad_log_p.detach().clone()
 
         kernel_dict = adaptive_isotropic_gaussian_kernel(xs=fixed_actions, ys=updated_actions)
 
@@ -188,28 +174,23 @@ class MAVBAC():
 
         action_gradients = torch.mean(
             kappa * grad_log_p + kernel_dict["gradient"], dim=1)
-        #可以看一下这里
-
-        #print(updated_actions)
 
         gradients = torch.autograd.grad(
             outputs = updated_actions,
             inputs = self._conditional_policy.parameters(),
-            grad_outputs=action_gradients
+            grad_outputs=action_gradients,
         )
 
-        surrogate_loss = -torch.sum(
-            torch.Tensor([
-                torch.sum(w * g.detach())
-                for w, g in zip(self._conditional_policy.parameters(), gradients)
-            ])
-        )
+        tmp = torch.Tensor([0])                                                        
+        for w, g in zip(self._conditional_policy.parameters(), gradients):
+            tmp = tmp + torch.sum(w * g.detach().clone())
+
+        surrogate_loss = -torch.sum(tmp)
 
         optimizer = torch.optim.Adam(self._conditional_policy.parameters(),self._policy_lr)
-
         optimizer.zero_grad()
-        surrogate_loss.requires_grad_()
         surrogate_loss.backward()
+
         optimizer.step()
 
     def _target_update(self):
@@ -219,9 +200,10 @@ class MAVBAC():
         target_p_params = self._target_policy.parameters()
 
         for target, source in zip(target_q_params, source_q_params):
-            target = (1 - self._tau) * target + self._tau * source
+            target.data = (1 - self._tau) * target.data.detach().clone() + self._tau * source.data.detach().clone()
+        
         for target, source in zip(target_p_params, source_p_params):
-            target = (1 - self._tau) * target + self._tau * source
+            target.data = (1 - self._tau) * target.data.detach().clone() + self._tau * source.data.detach().clone()
     
     def get_feed_dict(self,batch,annealing):
         self._observations = torch.Tensor(batch['observations'])
@@ -241,7 +223,4 @@ class MAVBAC():
         if iteration % self._qf_target_update_interval == 0:
             self._target_update()
         if iteration % 1 == 0:
-            #print(iteration)
-            if (self._agent_id == 0):
-                print("new training")
-            print(iteration,self._agent_id,"???????????",torch.mean(self._q_values))
+            self.writer.add_scalar('avg',torch.mean(self._q_values),global_step=iteration)

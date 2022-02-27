@@ -5,6 +5,8 @@ import torch
 
 from copy import deepcopy
 
+from torch.utils.tensorboard import SummaryWriter
+
 class Sampler(object):
     def __init__(self, max_path_length, min_pool_size, batch_size):
         self._max_path_length = max_path_length
@@ -97,10 +99,11 @@ class MASampler(SimpleSampler):
         self.env = None
         self.agents = None
 
-        self.x_dot = []
-        self.y_max_r_dot = []
-        self.y_mean_r_dot = []
-        self.y_r_dot = []
+        self.writer = []
+        for i in range(self.agent_num):
+            self.writer.append(
+                SummaryWriter('runs/rewards_'+str(i))
+            )
 
     def set_policy(self, policies):
         for agent, policy in zip(self.agents, policies):
@@ -123,12 +126,15 @@ class MASampler(SimpleSampler):
             self._current_observation_n = self.env.reset()
         action_n = []
         for agent, current_observation in zip(self.agents, self._current_observation_n):
-            action = agent._policy(torch.Tensor(current_observation).detach())
-            action_n.append(np.array(action.detach()))
+            action,_ = agent._policy.get_action(torch.Tensor(current_observation).detach().clone())
+            action_n.append(np.array(action))
+
         next_observation_n, reward_n, done_n, info = self.env.step(action_n)
+
         self._path_length += 1
         self._path_return += np.array(reward_n, dtype=np.float32)
         self._total_samples += 1
+
         for i, agent in enumerate(self.agents):
             action = deepcopy(action_n[i])
             agent._pool.add_sample(observation=self._current_observation_n[i],
@@ -136,7 +142,7 @@ class MASampler(SimpleSampler):
                                     reward=reward_n[i],
                                     terminal=done_n[i],
                                     next_observation=next_observation_n[i])
-        #np.all?done_n?
+        
         if np.all(done_n) or self._path_length >= self._max_path_length:
             self._current_observation_n = self.env.reset()
             self._max_path_return = np.maximum(self._max_path_return, self._path_return)
@@ -147,12 +153,8 @@ class MASampler(SimpleSampler):
 
             self._path_return = np.array([0.] * self.agent_num, dtype=np.float32)
             self._n_episodes += 1
-
-            self.x_dot.append(self._n_episodes)
-            
-            self.y_max_r_dot.append(self._max_path_return)
-            self.y_mean_r_dot.append(self._mean_path_return)
-            self.y_r_dot.append(self._last_path_return)
+            for i in range(self.agent_num):
+                self.writer[i].add_scalar('rewards',self._mean_path_return[i],global_step=self._n_episodes)
 
         else:
             self._current_observation_n = next_observation_n
