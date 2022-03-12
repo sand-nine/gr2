@@ -71,9 +71,9 @@ class MAVBAC():
 
     def _q_update(self):
         opponent_target_actions = (
-            2*torch.rand(1,self._value_n_particles,self._opponent_action_dim)-1
+            2*torch.rand(1,self._value_n_particles,self._opponent_action_dim) - 1
         ).expand(64,self._value_n_particles,self._opponent_action_dim)
-
+        #16个a^(-i)样本
         q_value_targets = self.target_joint_qf(
             (self._next_observations[:,None,:],self._next_actions[:,None,:],opponent_target_actions)
         )
